@@ -1,0 +1,19 @@
+{
+  "name": "Budget Book",
+  "short_name": "Budget",
+  "description": "Receipt-aware household budget book",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f7f2e8",
+  "theme_color": "#10231f",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

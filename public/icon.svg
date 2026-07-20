@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Budget Book">
+  <rect width="512" height="512" rx="96" fill="#10231f"/>
+  <path d="M132 122h248c18 0 32 14 32 32v204c0 18-14 32-32 32H132c-18 0-32-14-32-32V154c0-18 14-32 32-32Z" fill="#f7f2e8"/>
+  <path d="M148 178h108M148 224h216M148 270h178" stroke="#10231f" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="344" cy="314" r="48" fill="#2f9f8f"/>
+  <path d="M323 315l15 16 30-36" fill="none" stroke="#f7f2e8" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
