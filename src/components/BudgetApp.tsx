@@ -6,7 +6,9 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Globe2,
   Home,
+  Languages,
   MapPin,
   NotebookPen,
   Plus,
@@ -17,6 +19,11 @@ import {
   WalletCards,
 } from "lucide-react";
 import { ChangeEvent, useMemo, useState } from "react";
+import {
+  formatReceiptMoney,
+  receiptSamples,
+  type ReceiptAnalysis,
+} from "@/lib/receiptAnalysis";
 
 type Transaction = {
   id: number;
@@ -54,32 +61,35 @@ const transactions: Transaction[] = [
   },
 ];
 
-const extractedItems = [
-  { name: "우유 900ml", price: 2980 },
-  { name: "계란 10구", price: 5490 },
-  { name: "바나나", price: 3980 },
-  { name: "종량제 봉투", price: 760 },
-];
+const sampleTabs = [
+  { key: "korea", label: "한국" },
+  { key: "usa", label: "미국" },
+  { key: "japan", label: "일본" },
+] as const;
 
 const money = new Intl.NumberFormat("ko-KR");
 
 export function BudgetApp() {
   const [selectedDate, setSelectedDate] = useState("20");
   const [receiptName, setReceiptName] = useState("");
+  const [sampleKey, setSampleKey] = useState<keyof typeof receiptSamples>("usa");
   const [isReviewed, setIsReviewed] = useState(false);
 
+  const analysis: ReceiptAnalysis = receiptSamples[sampleKey];
   const dailyTotal = useMemo(
     () => transactions.reduce((total, item) => total + item.amount, 0),
-    [],
-  );
-  const receiptTotal = useMemo(
-    () => extractedItems.reduce((total, item) => total + item.price, 0),
     [],
   );
 
   function handleReceipt(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     setReceiptName(file?.name ?? "");
+    setIsReviewed(false);
+  }
+
+  function selectSample(key: keyof typeof receiptSamples) {
+    setSampleKey(key);
+    setReceiptName("");
     setIsReviewed(false);
   }
 
@@ -207,9 +217,9 @@ export function BudgetApp() {
           <div className="mt-6 border-t border-[#e2d8c7] pt-5">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <h2 className="text-lg font-bold">영수증 분석</h2>
+                <h2 className="text-lg font-bold">글로벌 영수증 분석</h2>
                 <p className="mt-1 text-sm text-[#63746f]">
-                  사진 첨부 후 점포와 품목을 확인하세요.
+                  국가, 언어, 통화, 세금과 팁까지 구분합니다.
                 </p>
               </div>
               <label
@@ -228,6 +238,23 @@ export function BudgetApp() {
               </label>
             </div>
 
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              {sampleTabs.map((sample) => (
+                <button
+                  key={sample.key}
+                  type="button"
+                  onClick={() => selectSample(sample.key)}
+                  className={`h-10 rounded-lg border text-sm font-bold ${
+                    sampleKey === sample.key
+                      ? "border-[#10231f] bg-[#10231f] text-white"
+                      : "border-[#d8cebb] bg-white text-[#5e746f]"
+                  }`}
+                >
+                  {sample.label}
+                </button>
+              ))}
+            </div>
+
             <div className="mt-4 rounded-lg border border-[#d8cebb] bg-[#fffaf0] p-4">
               <div className="flex items-start gap-3">
                 <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-white text-[#b15e32]">
@@ -235,49 +262,91 @@ export function BudgetApp() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-semibold">
-                    {receiptName || "emart-receipt.jpg"}
+                    {receiptName || analysis.sourceName}
                   </p>
                   <p className="mt-1 text-sm text-[#6f756b]">
-                    {receiptName ? "분석 대기" : "샘플 분석 결과"}
+                    {receiptName ? "OCR 연결 대기 - 구조화 준비됨" : "샘플 분석 결과"}
                   </p>
+                </div>
+                <div className="rounded-lg bg-white px-2 py-1 text-xs font-bold text-[#257d72]">
+                  {Math.round(analysis.confidence * 100)}%
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
+                <div className="rounded-lg bg-white p-2">
+                  <Globe2 size={15} className="mb-1 text-[#257d72]" />
+                  <p className="font-bold">{analysis.country}</p>
+                </div>
+                <div className="rounded-lg bg-white p-2">
+                  <Languages size={15} className="mb-1 text-[#257d72]" />
+                  <p className="font-bold">{analysis.language}</p>
+                </div>
+                <div className="rounded-lg bg-white p-2">
+                  <WalletCards size={15} className="mb-1 text-[#257d72]" />
+                  <p className="font-bold">{analysis.currency}</p>
                 </div>
               </div>
 
               <div className="mt-4 grid gap-2 text-sm">
                 <div className="flex items-center gap-2">
                   <Store size={16} className="text-[#257d72]" />
-                  <span className="font-semibold">이마트24 성수포레점</span>
+                  <span className="font-semibold">{analysis.store.name}</span>
                 </div>
                 <div className="flex items-center gap-2 text-[#5f6d67]">
                   <MapPin size={16} />
-                  <span>서울 성동구 왕십리로 96</span>
+                  <span>{analysis.store.address}</span>
                 </div>
                 <div className="flex items-center gap-2 text-[#5f6d67]">
                   <Search size={16} />
-                  <span>02-1234-5678</span>
+                  <span>{analysis.store.phone}</span>
                 </div>
               </div>
 
               <div className="mt-4 divide-y divide-[#eadfc9]">
-                {extractedItems.map((item) => (
-                  <div key={item.name} className="flex items-center justify-between py-2">
-                    <span>{item.name}</span>
-                    <span className="font-semibold">{money.format(item.price)}원</span>
+                {analysis.items.map((item) => (
+                  <div key={item.name} className="flex items-center justify-between gap-3 py-2">
+                    <div className="min-w-0">
+                      <p className="truncate">{item.name}</p>
+                      <p className="mt-0.5 text-xs text-[#6f756b]">
+                        {item.quantity}개 x{" "}
+                        {formatReceiptMoney(item.unitPrice, analysis.currency)}
+                      </p>
+                    </div>
+                    <span className="shrink-0 font-semibold">
+                      {formatReceiptMoney(item.totalPrice, analysis.currency)}
+                    </span>
                   </div>
                 ))}
               </div>
 
-              <div className="mt-4 flex items-center justify-between border-t border-[#eadfc9] pt-3">
-                <p className="font-bold">합계 {money.format(receiptTotal)}원</p>
-                <button
-                  type="button"
-                  onClick={() => setIsReviewed(true)}
-                  className="flex h-10 items-center gap-2 rounded-lg bg-[#10231f] px-4 text-sm font-bold text-white"
-                >
-                  <Check size={17} />
-                  {isReviewed ? "확정됨" : "확정"}
-                </button>
+              <div className="mt-4 space-y-2 border-t border-[#eadfc9] pt-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span>소계</span>
+                  <span>{formatReceiptMoney(analysis.subtotal, analysis.currency)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>세금</span>
+                  <span>{formatReceiptMoney(analysis.tax, analysis.currency)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>팁/서비스차지</span>
+                  <span>{formatReceiptMoney(analysis.tip, analysis.currency)}</span>
+                </div>
+                <div className="flex items-center justify-between pt-1 text-base font-bold">
+                  <span>합계</span>
+                  <span>{formatReceiptMoney(analysis.total, analysis.currency)}</span>
+                </div>
               </div>
+
+              <button
+                type="button"
+                onClick={() => setIsReviewed(true)}
+                className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#10231f] text-sm font-bold text-white"
+              >
+                <Check size={17} />
+                {isReviewed ? "확정됨" : "확정하고 가계부에 저장"}
+              </button>
             </div>
           </div>
         </section>
