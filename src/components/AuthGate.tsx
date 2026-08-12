@@ -10,23 +10,52 @@ export function AuthGate() {
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [lastEmailSent, setLastEmailSent] = useState("");
+  const [authError, setAuthError] = useState("");
 
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
     let isMounted = true;
-
-    supabase.auth.getSession().then(({ data }) => {
+    const fallbackTimer = window.setTimeout(() => {
       if (!isMounted) {
         return;
       }
 
-      setSession(data.session);
+      setAuthError("세션 확인이 지연되어 로그인 화면으로 전환했습니다.");
       setIsLoading(false);
-    });
+    }, 5000);
+
+    supabase.auth
+      .getSession()
+      .then(({ data, error }) => {
+        if (!isMounted) {
+          return;
+        }
+
+        if (error) {
+          setAuthError(error.message);
+        }
+
+        window.clearTimeout(fallbackTimer);
+        setSession(data.session);
+        setIsLoading(false);
+      })
+      .catch((error: unknown) => {
+        if (!isMounted) {
+          return;
+        }
+
+        window.clearTimeout(fallbackTimer);
+        setAuthError(
+          error instanceof Error ? error.message : "세션 확인에 실패했습니다.",
+        );
+        setSession(null);
+        setIsLoading(false);
+      });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      window.clearTimeout(fallbackTimer);
       setSession(nextSession);
       setIsLoading(false);
 
@@ -44,6 +73,7 @@ export function AuthGate() {
 
     return () => {
       isMounted = false;
+      window.clearTimeout(fallbackTimer);
       subscription.unsubscribe();
     };
   }, []);
@@ -62,7 +92,15 @@ export function AuthGate() {
   }
 
   if (!session) {
-    return <LoginScreen onEmailSent={setLastEmailSent} />;
+    return (
+      <LoginScreen
+        authNotice={authError}
+        onAuthSubmitted={(email) => {
+          setAuthError("");
+          setLastEmailSent(email);
+        }}
+      />
+    );
   }
 
   return (
