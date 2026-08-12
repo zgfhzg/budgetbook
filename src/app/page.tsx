@@ -1,5 +1,5 @@
-import { BudgetApp } from "@/components/BudgetApp";
+import { AuthGate } from "@/components/AuthGate";
 
 export default function Home() {
-  return <BudgetApp />;
+  return <AuthGate />;
 }

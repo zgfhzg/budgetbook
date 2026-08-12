@@ -34,6 +34,7 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [];
       };
       categories: {
         Row: {
@@ -72,6 +73,7 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [];
       };
       stores: {
         Row: {
@@ -116,6 +118,7 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [];
       };
       transactions: {
         Row: {
@@ -166,6 +169,7 @@ export type Database = {
           updated_at?: string;
           deleted_at?: string | null;
         };
+        Relationships: [];
       };
       receipts: {
         Row: {
@@ -243,6 +247,7 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [];
       };
       receipt_items: {
         Row: {
@@ -293,6 +298,7 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [];
       };
     };
     Views: Record<string, never>;
@@ -306,5 +312,6 @@ export type Database = {
         | "failed"
         | "confirmed";
     };
+    CompositeTypes: Record<string, never>;
   };
 };

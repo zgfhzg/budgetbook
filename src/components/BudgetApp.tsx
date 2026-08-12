@@ -16,50 +16,36 @@ import {
   Search,
   Settings,
   Store,
+  LogOut,
   WalletCards,
 } from "lucide-react";
-import { ChangeEvent, useMemo, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   formatReceiptMoney,
   receiptSamples,
   type ReceiptAnalysis,
 } from "@/lib/receiptAnalysis";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import type { Database } from "@/lib/supabase/database.types";
 
-type Transaction = {
-  id: number;
+type CategoryRow = Pick<
+  Database["public"]["Tables"]["categories"]["Row"],
+  "id" | "name"
+>;
+type StoreRow = Pick<Database["public"]["Tables"]["stores"]["Row"], "name">;
+type TransactionRow = Database["public"]["Tables"]["transactions"]["Row"] & {
+  categories: CategoryRow | null;
+  stores: StoreRow | null;
+};
+
+type TransactionItem = {
+  id: string;
   title: string;
   place: string;
   amount: number;
   category: string;
   time: string;
 };
-
-const transactions: Transaction[] = [
-  {
-    id: 1,
-    title: "아이스 아메리카노",
-    place: "모닝브루 성수점",
-    amount: 4500,
-    category: "카페",
-    time: "09:18",
-  },
-  {
-    id: 2,
-    title: "점심 정식",
-    place: "소담식탁",
-    amount: 12800,
-    category: "식비",
-    time: "12:42",
-  },
-  {
-    id: 3,
-    title: "지하철",
-    place: "교통카드",
-    amount: 1550,
-    category: "교통",
-    time: "19:03",
-  },
-];
 
 const sampleTabs = [
   { key: "korea", label: "한국" },
@@ -68,18 +54,91 @@ const sampleTabs = [
 ] as const;
 
 const money = new Intl.NumberFormat("ko-KR");
+const selectedMonth = "2026-07";
+const calendarDays = ["16", "17", "18", "19", "20", "21", "22"];
 
-export function BudgetApp() {
+type BudgetAppProps = {
+  userId: string;
+  userEmail: string;
+  onSignOut: () => Promise<void>;
+};
+
+function getLocalDate(day: string) {
+  return `${selectedMonth}-${day}`;
+}
+
+function formatTransactionTime(value: string) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(value));
+}
+
+function toTransactionItem(row: TransactionRow): TransactionItem {
+  return {
+    id: row.id,
+    title: row.title,
+    place: row.stores?.name ?? "직접 입력",
+    amount: Number(row.amount),
+    category: row.categories?.name ?? "미분류",
+    time: formatTransactionTime(row.occurred_at),
+  };
+}
+
+export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
   const [selectedDate, setSelectedDate] = useState("20");
   const [receiptName, setReceiptName] = useState("");
   const [sampleKey, setSampleKey] = useState<keyof typeof receiptSamples>("usa");
   const [isReviewed, setIsReviewed] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [transactions, setTransactions] = useState<TransactionItem[]>([]);
+  const [isLoadingTransactions, setIsLoadingTransactions] = useState(true);
+  const [isSavingReceipt, setIsSavingReceipt] = useState(false);
+  const [databaseMessage, setDatabaseMessage] = useState("");
+  const [databaseError, setDatabaseError] = useState("");
 
   const analysis: ReceiptAnalysis = receiptSamples[sampleKey];
+  const localDate = getLocalDate(selectedDate);
   const dailyTotal = useMemo(
     () => transactions.reduce((total, item) => total + item.amount, 0),
-    [],
+    [transactions],
   );
+
+  const loadTransactions = useCallback(
+    async (nextLocalDate = localDate) => {
+      setIsLoadingTransactions(true);
+      setDatabaseError("");
+
+      const supabase = getSupabaseBrowserClient();
+      const { data, error } = await supabase
+        .from("transactions")
+        .select("*, categories(id, name), stores(name)")
+        .eq("user_id", userId)
+        .eq("local_date", nextLocalDate)
+        .is("deleted_at", null)
+        .order("occurred_at", { ascending: false });
+
+      if (error) {
+        setTransactions([]);
+        setDatabaseError(error.message);
+        setIsLoadingTransactions(false);
+        return;
+      }
+
+      setTransactions(((data ?? []) as TransactionRow[]).map(toTransactionItem));
+      setIsLoadingTransactions(false);
+    },
+    [localDate, userId],
+  );
+
+  useEffect(() => {
+    const task = window.setTimeout(() => {
+      void loadTransactions(localDate);
+    }, 0);
+
+    return () => window.clearTimeout(task);
+  }, [loadTransactions, localDate]);
 
   function handleReceipt(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -91,6 +150,118 @@ export function BudgetApp() {
     setSampleKey(key);
     setReceiptName("");
     setIsReviewed(false);
+    setDatabaseMessage("");
+    setDatabaseError("");
+  }
+
+  async function handleSaveReceipt() {
+    setIsSavingReceipt(true);
+    setDatabaseMessage("");
+    setDatabaseError("");
+
+    const supabase = getSupabaseBrowserClient();
+    const { data: category } = await supabase
+      .from("categories")
+      .select("id, name")
+      .eq("name", "식비")
+      .eq("kind", "expense")
+      .eq("is_system", true)
+      .maybeSingle();
+
+    const { data: store, error: storeError } = await supabase
+      .from("stores")
+      .insert({
+        user_id: userId,
+        name: analysis.store.name,
+        address: analysis.store.address,
+        phone: analysis.store.phone,
+        country: analysis.country,
+      })
+      .select("id")
+      .single();
+
+    if (storeError) {
+      setDatabaseError(storeError.message);
+      setIsSavingReceipt(false);
+      return;
+    }
+
+    const { data: transaction, error: transactionError } = await supabase
+      .from("transactions")
+      .insert({
+        user_id: userId,
+        category_id: category?.id ?? null,
+        store_id: store.id,
+        title: analysis.store.name,
+        amount: analysis.total,
+        currency: analysis.currency,
+        occurred_at: analysis.purchasedAt,
+        local_date: localDate,
+        memo: `${analysis.country} 영수증 자동 저장`,
+      })
+      .select("id")
+      .single();
+
+    if (transactionError) {
+      setDatabaseError(transactionError.message);
+      setIsSavingReceipt(false);
+      return;
+    }
+
+    const storagePath = `${userId}/confirmed/${Date.now()}-${analysis.sourceName}`;
+    const { data: receipt, error: receiptError } = await supabase
+      .from("receipts")
+      .insert({
+        user_id: userId,
+        store_id: store.id,
+        transaction_id: transaction.id,
+        status: "confirmed",
+        storage_path: storagePath,
+        source_file_name: receiptName || analysis.sourceName,
+        country: analysis.country,
+        language: analysis.language,
+        currency: analysis.currency,
+        purchased_at: analysis.purchasedAt,
+        subtotal: analysis.subtotal,
+        tax: analysis.tax,
+        tip: analysis.tip,
+        total: analysis.total,
+        confidence: analysis.confidence,
+        parsed_json: analysis,
+      })
+      .select("id")
+      .single();
+
+    if (receiptError) {
+      setDatabaseError(receiptError.message);
+      setIsSavingReceipt(false);
+      return;
+    }
+
+    const { error: itemsError } = await supabase.from("receipt_items").insert(
+      analysis.items.map((item, index) => ({
+        receipt_id: receipt.id,
+        user_id: userId,
+        name: item.name,
+        quantity: item.quantity,
+        unit_price: item.unitPrice,
+        total_price: item.totalPrice,
+        currency: analysis.currency,
+        line_index: index,
+        confidence: analysis.confidence,
+      })),
+    );
+
+    if (itemsError) {
+      setDatabaseError(itemsError.message);
+      setIsSavingReceipt(false);
+      return;
+    }
+
+    setIsReviewed(true);
+    setDatabaseMessage("Supabase에 저장됐습니다.");
+    await loadTransactions(localDate);
+    setIsSavingReceipt(false);
   }
 
   return (
@@ -106,13 +277,21 @@ export function BudgetApp() {
             </div>
             <button
               type="button"
+              onClick={async () => {
+                setIsSigningOut(true);
+                await onSignOut();
+                setIsSigningOut(false);
+              }}
               className="grid size-11 place-items-center rounded-lg border border-[#d9d0bf] bg-white text-[#14221f]"
-              aria-label="설정"
-              title="설정"
+              aria-label="로그아웃"
+              title="로그아웃"
             >
-              <Settings size={20} />
+              {isSigningOut ? <Settings size={20} /> : <LogOut size={20} />}
             </button>
           </div>
+          <p className="mt-3 truncate text-xs font-semibold text-[#5e746f]">
+            {userEmail}
+          </p>
         </header>
 
         <section className="px-5">
@@ -140,7 +319,7 @@ export function BudgetApp() {
           </div>
 
           <div className="mt-4 grid grid-cols-7 gap-2">
-            {["16", "17", "18", "19", "20", "21", "22"].map((day) => (
+            {calendarDays.map((day) => (
               <button
                 key={day}
                 type="button"
@@ -189,6 +368,24 @@ export function BudgetApp() {
           </div>
 
           <div className="mt-3 space-y-2">
+            {databaseError ? (
+              <div className="rounded-lg border border-[#e6ddcb] bg-white p-4 text-sm font-semibold text-[#b15e32]">
+                {databaseError}
+              </div>
+            ) : null}
+
+            {isLoadingTransactions ? (
+              <div className="rounded-lg border border-[#e6ddcb] bg-white p-4 text-sm font-semibold text-[#63746f]">
+                내역을 불러오는 중
+              </div>
+            ) : null}
+
+            {!isLoadingTransactions && transactions.length === 0 ? (
+              <div className="rounded-lg border border-[#e6ddcb] bg-white p-4 text-sm leading-6 text-[#63746f]">
+                아직 저장된 내역이 없습니다. 영수증 분석 결과를 확정하면 이 날짜에 추가됩니다.
+              </div>
+            ) : null}
+
             {transactions.map((item) => (
               <article
                 key={item.id}
@@ -341,12 +538,23 @@ export function BudgetApp() {
 
               <button
                 type="button"
-                onClick={() => setIsReviewed(true)}
-                className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#10231f] text-sm font-bold text-white"
+                onClick={handleSaveReceipt}
+                disabled={isSavingReceipt || isReviewed}
+                className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#10231f] text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-[#8a958f]"
               >
                 <Check size={17} />
-                {isReviewed ? "확정됨" : "확정하고 가계부에 저장"}
+                {isSavingReceipt
+                  ? "저장 중"
+                  : isReviewed
+                    ? "확정됨"
+                    : "확정하고 가계부에 저장"}
               </button>
+
+              {databaseMessage ? (
+                <p className="mt-3 text-sm font-semibold text-[#257d72]">
+                  {databaseMessage}
+                </p>
+              ) : null}
             </div>
           </div>
         </section>
