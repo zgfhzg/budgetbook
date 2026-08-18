@@ -6,24 +6,32 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  CircleDollarSign,
   Globe2,
   Home,
   Languages,
   MapPin,
-  NotebookPen,
   Plus,
   ReceiptText,
+  RefreshCw,
   Search,
   Sparkles,
   Settings,
   Store,
   LogOut,
   WalletCards,
+  X,
 } from "lucide-react";
-import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   formatReceiptMoney,
-  receiptSamples,
   type ReceiptAnalysis,
 } from "@/lib/receiptAnalysis";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -38,6 +46,17 @@ type TransactionRow = Database["public"]["Tables"]["transactions"]["Row"] & {
   categories: CategoryRow | null;
   stores: StoreRow | null;
 };
+type ReceiptRow = Pick<
+  Database["public"]["Tables"]["receipts"]["Row"],
+  | "id"
+  | "status"
+  | "storage_path"
+  | "source_file_name"
+  | "country"
+  | "currency"
+  | "total"
+  | "created_at"
+>;
 
 type TransactionItem = {
   id: string;
@@ -62,14 +81,12 @@ type AnalyzeReceiptResponse = {
   error?: string;
 };
 
-const sampleTabs = [
-  { key: "korea", label: "한국" },
-  { key: "hongkong", label: "홍콩" },
-] as const;
+type AppTab = "home" | "receipts" | "search";
+
+const manualCategories = ["식비", "카페", "교통", "생활", "의료"] as const;
+const manualCurrencies = ["KRW", "HKD"] as const;
 
 const money = new Intl.NumberFormat("ko-KR");
-const selectedMonth = "2026-07";
-const calendarDays = ["16", "17", "18", "19", "20", "21", "22"];
 
 type BudgetAppProps = {
   userId: string;
@@ -77,8 +94,41 @@ type BudgetAppProps = {
   onSignOut: () => Promise<void>;
 };
 
-function getLocalDate(day: string) {
-  return `${selectedMonth}-${day}`;
+function formatLocalDate(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
+    2,
+    "0",
+  )}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function parseLocalDate(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function addDays(date: Date, amount: number) {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + amount);
+  return nextDate;
+}
+
+function getCurrentDate() {
+  return formatLocalDate(new Date());
+}
+
+function getWeekDays(selectedLocalDate: string) {
+  const selectedDate = parseLocalDate(selectedLocalDate);
+  const sunday = addDays(selectedDate, -selectedDate.getDay());
+  const formatter = new Intl.DateTimeFormat("ko-KR", { weekday: "short" });
+
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = addDays(sunday, index);
+    return {
+      date: formatLocalDate(date),
+      day: String(date.getDate()).padStart(2, "0"),
+      weekday: formatter.format(date),
+    };
+  });
 }
 
 function formatTransactionTime(value: string) {
@@ -117,7 +167,8 @@ function sanitizeStorageFileName(fileName: string) {
 }
 
 export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
-  const [selectedDate, setSelectedDate] = useState("20");
+  const [activeTab, setActiveTab] = useState<AppTab>("home");
+  const [selectedDate, setSelectedDate] = useState(getCurrentDate);
   const [receiptName, setReceiptName] = useState("");
   const [uploadedReceipt, setUploadedReceipt] = useState<UploadedReceipt | null>(
     null,
@@ -125,20 +176,45 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
   const [analyzedReceipt, setAnalyzedReceipt] = useState<ReceiptAnalysis | null>(
     null,
   );
-  const [sampleKey, setSampleKey] =
-    useState<keyof typeof receiptSamples>("hongkong");
   const [isReviewed, setIsReviewed] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [transactions, setTransactions] = useState<TransactionItem[]>([]);
+  const [receipts, setReceipts] = useState<ReceiptRow[]>([]);
+  const [isManualFormOpen, setIsManualFormOpen] = useState(false);
+  const [manualTitle, setManualTitle] = useState("");
+  const [manualAmount, setManualAmount] = useState("");
+  const [manualCategory, setManualCategory] =
+    useState<(typeof manualCategories)[number]>("식비");
+  const [manualCurrency, setManualCurrency] =
+    useState<(typeof manualCurrencies)[number]>("KRW");
+  const [manualPlace, setManualPlace] = useState("");
+  const [manualTime, setManualTime] = useState("12:00");
+  const [manualMemo, setManualMemo] = useState("");
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(true);
+  const [isLoadingReceipts, setIsLoadingReceipts] = useState(false);
   const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
   const [isAnalyzingReceipt, setIsAnalyzingReceipt] = useState(false);
+  const [isSavingManual, setIsSavingManual] = useState(false);
   const [isSavingReceipt, setIsSavingReceipt] = useState(false);
   const [databaseMessage, setDatabaseMessage] = useState("");
   const [databaseError, setDatabaseError] = useState("");
 
-  const analysis: ReceiptAnalysis =
-    analyzedReceipt ?? receiptSamples[sampleKey] ?? receiptSamples.hongkong;
+  const calendarDays = useMemo(() => getWeekDays(selectedDate), [selectedDate]);
+  const calendarTitle = useMemo(() => {
+    const [startDay, endDay] = [calendarDays[0], calendarDays[6]];
+    const startDate = parseLocalDate(startDay.date);
+    const endDate = parseLocalDate(endDay.date);
+
+    if (startDate.getMonth() === endDate.getMonth()) {
+      return `${startDate.getFullYear()}년 ${startDate.getMonth() + 1}월`;
+    }
+
+    return `${startDate.getMonth() + 1}월 ${startDay.day}일 - ${
+      endDate.getMonth() + 1
+    }월 ${endDay.day}일`;
+  }, [calendarDays]);
+  const localDate = selectedDate;
+  const analysis = analyzedReceipt;
   const requiresAnalysisBeforeSave = Boolean(uploadedReceipt && !analyzedReceipt);
   const receiptStatusLabel = isUploadingReceipt
     ? "Supabase Storage 업로드 중"
@@ -150,13 +226,12 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
           ? "원본 업로드 완료 - AI 분석 대기"
           : receiptName
             ? "업로드 준비 중"
-            : "샘플 분석 결과";
+            : "영수증 대기";
   const receiptBadgeLabel = analyzedReceipt
-    ? `${Math.round(analysis.confidence * 100)}%`
+    ? `${Math.round(analyzedReceipt.confidence * 100)}%`
     : uploadedReceipt
       ? "업로드됨"
-      : `${Math.round(analysis.confidence * 100)}%`;
-  const localDate = getLocalDate(selectedDate);
+      : "대기";
   const dailyTotal = useMemo(
     () => transactions.reduce((total, item) => total + item.amount, 0),
     [transactions],
@@ -189,6 +264,31 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
     [localDate, userId],
   );
 
+  const loadReceipts = useCallback(async () => {
+    setIsLoadingReceipts(true);
+    setDatabaseError("");
+
+    const supabase = getSupabaseBrowserClient();
+    const { data, error } = await supabase
+      .from("receipts")
+      .select(
+        "id, status, storage_path, source_file_name, country, currency, total, created_at",
+      )
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(30);
+
+    if (error) {
+      setReceipts([]);
+      setDatabaseError(error.message);
+      setIsLoadingReceipts(false);
+      return;
+    }
+
+    setReceipts(data ?? []);
+    setIsLoadingReceipts(false);
+  }, [userId]);
+
   useEffect(() => {
     const task = window.setTimeout(() => {
       void loadTransactions(localDate);
@@ -196,6 +296,16 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
 
     return () => window.clearTimeout(task);
   }, [loadTransactions, localDate]);
+
+  function changeTab(nextTab: AppTab) {
+    setActiveTab(nextTab);
+    setDatabaseMessage("");
+    setDatabaseError("");
+
+    if (nextTab === "receipts") {
+      void loadReceipts();
+    }
+  }
 
   async function handleReceipt(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -347,24 +457,105 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
 
     setAnalyzedReceipt(result.analysis);
     setDatabaseMessage(
-      result.pipeline?.provider === "mock-no-api-key"
-        ? "분석 흐름을 확인했습니다. OpenAI API 키 연결 전이라 샘플 결과를 사용합니다."
+      result.pipeline?.provider === "text-parser"
+        ? "텍스트 기반 분석이 완료되었습니다."
         : "AI 분석이 완료되었습니다.",
     );
     setIsAnalyzingReceipt(false);
   }
 
-  function selectSample(key: keyof typeof receiptSamples) {
-    setSampleKey(key);
-    setReceiptName("");
-    setUploadedReceipt(null);
-    setAnalyzedReceipt(null);
-    setIsReviewed(false);
+  function resetManualForm() {
+    setManualTitle("");
+    setManualAmount("");
+    setManualCategory("식비");
+    setManualCurrency("KRW");
+    setManualPlace("");
+    setManualTime("12:00");
+    setManualMemo("");
+  }
+
+  async function handleSaveManualTransaction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     setDatabaseMessage("");
     setDatabaseError("");
+
+    const normalizedTitle = manualTitle.trim();
+    const normalizedAmount = Number(manualAmount.replace(/,/g, ""));
+    const normalizedPlace = manualPlace.trim();
+
+    if (!normalizedTitle) {
+      setDatabaseError("내역명을 입력해 주세요.");
+      return;
+    }
+
+    if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+      setDatabaseError("금액을 0보다 크게 입력해 주세요.");
+      return;
+    }
+
+    setIsSavingManual(true);
+
+    const supabase = getSupabaseBrowserClient();
+    const { data: category } = await supabase
+      .from("categories")
+      .select("id, name")
+      .eq("name", manualCategory)
+      .eq("kind", "expense")
+      .maybeSingle();
+
+    let storeId: string | null = null;
+    if (normalizedPlace) {
+      const { data: store, error: storeError } = await supabase
+        .from("stores")
+        .insert({
+          user_id: userId,
+          name: normalizedPlace,
+        })
+        .select("id")
+        .single();
+
+      if (storeError) {
+        setDatabaseError(storeError.message);
+        setIsSavingManual(false);
+        return;
+      }
+
+      storeId = store.id;
+    }
+
+    const occurredAt = new Date(`${localDate}T${manualTime}:00`).toISOString();
+    const { error } = await supabase.from("transactions").insert({
+      user_id: userId,
+      category_id: category?.id ?? null,
+      store_id: storeId,
+      kind: "expense",
+      title: normalizedTitle,
+      amount: normalizedAmount,
+      currency: manualCurrency,
+      occurred_at: occurredAt,
+      local_date: localDate,
+      memo: manualMemo.trim() || null,
+    });
+
+    if (error) {
+      setDatabaseError(error.message);
+      setIsSavingManual(false);
+      return;
+    }
+
+    resetManualForm();
+    setIsManualFormOpen(false);
+    setDatabaseMessage("수기 내역을 저장했습니다.");
+    await loadTransactions(localDate);
+    setIsSavingManual(false);
   }
 
   async function handleSaveReceipt() {
+    if (!analysis) {
+      setDatabaseError("분석 완료 후 저장할 수 있습니다.");
+      return;
+    }
+
     if (requiresAnalysisBeforeSave) {
       setDatabaseError("업로드한 영수증은 AI 분석 후 확정할 수 있습니다.");
       return;
@@ -523,10 +714,14 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
           </p>
         </header>
 
-        <section className="px-5">
+        <div className={activeTab === "home" ? "" : "hidden"}>
+          <section className="px-5">
           <div className="flex items-center justify-between">
             <button
               type="button"
+              onClick={() =>
+                setSelectedDate(formatLocalDate(addDays(parseLocalDate(selectedDate), -7)))
+              }
               className="grid size-9 place-items-center rounded-lg border border-[#d9d0bf] bg-white"
               aria-label="이전 주"
               title="이전 주"
@@ -535,10 +730,13 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
             </button>
             <div className="flex items-center gap-2 text-sm font-semibold">
               <CalendarDays size={17} />
-              2026년 7월
+              {calendarTitle}
             </div>
             <button
               type="button"
+              onClick={() =>
+                setSelectedDate(formatLocalDate(addDays(parseLocalDate(selectedDate), 7)))
+              }
               className="grid size-9 place-items-center rounded-lg border border-[#d9d0bf] bg-white"
               aria-label="다음 주"
               title="다음 주"
@@ -548,46 +746,44 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
           </div>
 
           <div className="mt-4 grid grid-cols-7 gap-2">
-            {calendarDays.map((day) => (
+            {calendarDays.map(({ date, day, weekday }) => (
               <button
-                key={day}
+                key={date}
                 type="button"
-                onClick={() => setSelectedDate(day)}
+                onClick={() => setSelectedDate(date)}
                 className={`flex h-14 flex-col items-center justify-center rounded-lg border text-sm transition ${
-                  selectedDate === day
+                  selectedDate === date
                     ? "border-[#10231f] bg-[#10231f] text-white"
                     : "border-[#e3dac8] bg-white text-[#5e746f]"
                 }`}
               >
-                <span className="text-[11px]">월</span>
+                <span className="text-[11px]">{weekday}</span>
                 <span className="font-bold">{day}</span>
               </button>
             ))}
           </div>
         </section>
 
-        <section className="mt-5 px-5">
+          <section className="mt-5 px-5">
           <div className="rounded-lg bg-[#10231f] p-5 text-white">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-sm text-[#b8c8c3]">7월 {selectedDate}일 지출</p>
+                <p className="text-sm text-[#b8c8c3]">{localDate} 지출</p>
                 <p className="mt-2 text-3xl font-bold">{money.format(dailyTotal)}원</p>
-              </div>
-              <div className="rounded-lg bg-[#2f9f8f] px-3 py-2 text-sm font-bold">
-                예산 68%
               </div>
             </div>
             <div className="mt-5 h-2 rounded-full bg-white/15">
-              <div className="h-2 w-[68%] rounded-full bg-[#f3bf4f]" />
+              <div className="h-2 w-0 rounded-full bg-[#f3bf4f]" />
             </div>
           </div>
         </section>
 
-        <section className="mt-6 flex-1 px-5 pb-28">
+          <section className="mt-6 flex-1 px-5 pb-28">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-bold">내역</h2>
             <button
               type="button"
+              onClick={() => setIsManualFormOpen(true)}
               className="grid size-9 place-items-center rounded-lg bg-[#2f9f8f] text-white"
               aria-label="직접 입력"
               title="직접 입력"
@@ -667,32 +863,15 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
               </label>
             </div>
 
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              {sampleTabs.map((sample) => (
-                <button
-                  key={sample.key}
-                  type="button"
-                  onClick={() => selectSample(sample.key)}
-                  className={`h-10 rounded-lg border text-sm font-bold ${
-                    sampleKey === sample.key
-                      ? "border-[#10231f] bg-[#10231f] text-white"
-                      : "border-[#d8cebb] bg-white text-[#5e746f]"
-                  }`}
-                >
-                  {sample.label}
-                </button>
-              ))}
-            </div>
-
             <div className="mt-4 rounded-lg border border-[#d8cebb] bg-[#fffaf0] p-4">
               <div className="flex items-start gap-3">
                 <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-white text-[#b15e32]">
                   <ReceiptText size={20} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-semibold">
-                    {receiptName || analysis.sourceName}
-                  </p>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-semibold">
+                      {receiptName || "영수증 이미지"}
+                    </p>
                   <p className="mt-1 text-sm text-[#6f756b]">
                     {receiptStatusLabel}
                   </p>
@@ -725,71 +904,75 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
                 </button>
               ) : null}
 
-              <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
-                <div className="rounded-lg bg-white p-2">
-                  <Globe2 size={15} className="mb-1 text-[#257d72]" />
-                  <p className="font-bold">{analysis.country}</p>
-                </div>
-                <div className="rounded-lg bg-white p-2">
-                  <Languages size={15} className="mb-1 text-[#257d72]" />
-                  <p className="font-bold">{analysis.language}</p>
-                </div>
-                <div className="rounded-lg bg-white p-2">
-                  <WalletCards size={15} className="mb-1 text-[#257d72]" />
-                  <p className="font-bold">{analysis.currency}</p>
-                </div>
-              </div>
-
-              <div className="mt-4 grid gap-2 text-sm">
-                <div className="flex items-center gap-2">
-                  <Store size={16} className="text-[#257d72]" />
-                  <span className="font-semibold">{analysis.store.name}</span>
-                </div>
-                <div className="flex items-center gap-2 text-[#5f6d67]">
-                  <MapPin size={16} />
-                  <span>{analysis.store.address}</span>
-                </div>
-                <div className="flex items-center gap-2 text-[#5f6d67]">
-                  <Search size={16} />
-                  <span>{analysis.store.phone}</span>
-                </div>
-              </div>
-
-              <div className="mt-4 divide-y divide-[#eadfc9]">
-                {analysis.items.map((item) => (
-                  <div key={item.name} className="flex items-center justify-between gap-3 py-2">
-                    <div className="min-w-0">
-                      <p className="truncate">{item.name}</p>
-                      <p className="mt-0.5 text-xs text-[#6f756b]">
-                        {item.quantity}개 x{" "}
-                        {formatReceiptMoney(item.unitPrice, analysis.currency)}
-                      </p>
+              {analysis ? (
+                <>
+                  <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
+                    <div className="rounded-lg bg-white p-2">
+                      <Globe2 size={15} className="mb-1 text-[#257d72]" />
+                      <p className="font-bold">{analysis.country}</p>
                     </div>
-                    <span className="shrink-0 font-semibold">
-                      {formatReceiptMoney(item.totalPrice, analysis.currency)}
-                    </span>
+                    <div className="rounded-lg bg-white p-2">
+                      <Languages size={15} className="mb-1 text-[#257d72]" />
+                      <p className="font-bold">{analysis.language}</p>
+                    </div>
+                    <div className="rounded-lg bg-white p-2">
+                      <WalletCards size={15} className="mb-1 text-[#257d72]" />
+                      <p className="font-bold">{analysis.currency}</p>
+                    </div>
                   </div>
-                ))}
-              </div>
 
-              <div className="mt-4 space-y-2 border-t border-[#eadfc9] pt-3 text-sm">
-                <div className="flex items-center justify-between">
-                  <span>소계</span>
-                  <span>{formatReceiptMoney(analysis.subtotal, analysis.currency)}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>세금</span>
-                  <span>{formatReceiptMoney(analysis.tax, analysis.currency)}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>팁/서비스차지</span>
-                  <span>{formatReceiptMoney(analysis.tip, analysis.currency)}</span>
-                </div>
-                <div className="flex items-center justify-between pt-1 text-base font-bold">
-                  <span>합계</span>
-                  <span>{formatReceiptMoney(analysis.total, analysis.currency)}</span>
-                </div>
-              </div>
+                  <div className="mt-4 grid gap-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <Store size={16} className="text-[#257d72]" />
+                      <span className="font-semibold">{analysis.store.name}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-[#5f6d67]">
+                      <MapPin size={16} />
+                      <span>{analysis.store.address}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-[#5f6d67]">
+                      <Search size={16} />
+                      <span>{analysis.store.phone}</span>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 divide-y divide-[#eadfc9]">
+                    {analysis.items.map((item) => (
+                      <div key={item.name} className="flex items-center justify-between gap-3 py-2">
+                        <div className="min-w-0">
+                          <p className="truncate">{item.name}</p>
+                          <p className="mt-0.5 text-xs text-[#6f756b]">
+                            {item.quantity}개 x{" "}
+                            {formatReceiptMoney(item.unitPrice, analysis.currency)}
+                          </p>
+                        </div>
+                        <span className="shrink-0 font-semibold">
+                          {formatReceiptMoney(item.totalPrice, analysis.currency)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 space-y-2 border-t border-[#eadfc9] pt-3 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span>소계</span>
+                      <span>{formatReceiptMoney(analysis.subtotal, analysis.currency)}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>세금</span>
+                      <span>{formatReceiptMoney(analysis.tax, analysis.currency)}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>팁/서비스차지</span>
+                      <span>{formatReceiptMoney(analysis.tip, analysis.currency)}</span>
+                    </div>
+                    <div className="flex items-center justify-between pt-1 text-base font-bold">
+                      <span>합계</span>
+                      <span>{formatReceiptMoney(analysis.total, analysis.currency)}</span>
+                    </div>
+                  </div>
+                </>
+              ) : null}
 
               <button
                 type="button"
@@ -798,6 +981,7 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
                   isSavingReceipt ||
                   isUploadingReceipt ||
                   isAnalyzingReceipt ||
+                  !analysis ||
                   requiresAnalysisBeforeSave ||
                   isReviewed
                 }
@@ -808,7 +992,7 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
                   ? "저장 중"
                   : isReviewed
                     ? "확정됨"
-                    : requiresAnalysisBeforeSave
+                    : !analysis || requiresAnalysisBeforeSave
                       ? "분석 후 확정 가능"
                     : "확정하고 가계부에 저장"}
               </button>
@@ -820,21 +1004,118 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
               ) : null}
             </div>
           </div>
-        </section>
+          </section>
+        </div>
+
+        <div className={activeTab === "receipts" ? "" : "hidden"}>
+          <section className="px-5 pb-28">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold">영수증 보관함</h2>
+                <p className="mt-1 text-sm text-[#63746f]">
+                  업로드한 원본과 분석 상태
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void loadReceipts()}
+                className="grid size-10 place-items-center rounded-lg border border-[#d9d0bf] bg-white"
+                aria-label="새로고침"
+                title="새로고침"
+              >
+                <RefreshCw size={18} />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {databaseError ? (
+                <div className="rounded-lg border border-[#e6ddcb] bg-white p-4 text-sm font-semibold text-[#b15e32]">
+                  {databaseError}
+                </div>
+              ) : null}
+
+              {isLoadingReceipts ? (
+                <div className="rounded-lg border border-[#e6ddcb] bg-white p-4 text-sm font-semibold text-[#63746f]">
+                  영수증을 불러오는 중
+                </div>
+              ) : null}
+
+              {!isLoadingReceipts && receipts.length === 0 ? (
+                <div className="rounded-lg border border-[#e6ddcb] bg-white p-4 text-sm leading-6 text-[#63746f]">
+                  아직 업로드한 영수증이 없습니다.
+                </div>
+              ) : null}
+
+              {receipts.map((receipt) => (
+                <article
+                  key={receipt.id}
+                  className="rounded-lg border border-[#e6ddcb] bg-white p-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate font-bold">
+                        {receipt.source_file_name ?? "영수증 이미지"}
+                      </p>
+                      <p className="mt-1 text-xs text-[#63746f]">
+                        {new Intl.DateTimeFormat("ko-KR", {
+                          month: "long",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        }).format(new Date(receipt.created_at))}
+                      </p>
+                    </div>
+                    <span className="rounded-lg bg-[#e8f3ef] px-2 py-1 text-xs font-bold text-[#257d72]">
+                      {receipt.status}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded-lg bg-[#fffaf0] p-2">
+                      <p className="font-bold text-[#5e746f]">국가</p>
+                      <p className="mt-1">{receipt.country ?? "분석 전"}</p>
+                    </div>
+                    <div className="rounded-lg bg-[#fffaf0] p-2">
+                      <p className="font-bold text-[#5e746f]">금액</p>
+                      <p className="mt-1">
+                        {receipt.total && receipt.currency
+                          ? formatReceiptMoney(Number(receipt.total), receipt.currency)
+                          : "분석 전"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <p className="mt-3 break-all rounded-lg bg-[#fffaf0] p-2 text-xs leading-5 text-[#5f6d67]">
+                    {receipt.storage_path}
+                  </p>
+                </article>
+              ))}
+            </div>
+          </section>
+        </div>
+
+        <div className={activeTab === "search" ? "" : "hidden"}>
+          <section className="px-5 pb-28">
+            <h2 className="text-xl font-bold">검색</h2>
+            <div className="mt-4 rounded-lg border border-[#e6ddcb] bg-white p-4 text-sm leading-6 text-[#63746f]">
+              검색 준비 중
+            </div>
+          </section>
+        </div>
 
         <nav className="fixed inset-x-0 bottom-0 mx-auto w-full max-w-[430px] border-t border-[#e5dccb] bg-[#fdfbf6]/95 px-5 pb-4 pt-3 backdrop-blur">
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             {[
-              { label: "홈", icon: Home, active: true },
-              { label: "작성", icon: NotebookPen, active: false },
-              { label: "영수증", icon: ReceiptText, active: false },
-              { label: "검색", icon: Search, active: false },
-            ].map(({ label, icon: Icon, active }) => (
+              { key: "home" as const, label: "홈", icon: Home },
+              { key: "receipts" as const, label: "영수증", icon: ReceiptText },
+              { key: "search" as const, label: "검색", icon: Search },
+            ].map(({ key, label, icon: Icon }) => (
               <button
                 key={label}
                 type="button"
+                onClick={() => changeTab(key)}
                 className={`flex h-12 flex-col items-center justify-center rounded-lg text-xs font-semibold ${
-                  active ? "bg-[#e6f4ef] text-[#1d7468]" : "text-[#7a7f78]"
+                  activeTab === key ? "bg-[#e6f4ef] text-[#1d7468]" : "text-[#7a7f78]"
                 }`}
               >
                 <Icon size={18} />
@@ -843,6 +1124,166 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
             ))}
           </div>
         </nav>
+
+        {isManualFormOpen ? (
+          <div className="fixed inset-0 z-20 bg-[#10231f]/45 px-4 py-5">
+            <div className="mx-auto flex h-full w-full max-w-[430px] items-end">
+              <section className="max-h-[92dvh] w-full overflow-y-auto rounded-t-lg bg-[#fdfbf6] p-5 shadow-2xl">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#5e746f]">
+                      Manual Entry
+                    </p>
+                    <h2 className="mt-1 text-xl font-bold">수기 내역 추가</h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsManualFormOpen(false);
+                      resetManualForm();
+                    }}
+                    className="grid size-10 place-items-center rounded-lg border border-[#d9d0bf] bg-white"
+                    aria-label="닫기"
+                    title="닫기"
+                  >
+                    <X size={19} />
+                  </button>
+                </div>
+
+                <form className="mt-5 space-y-4" onSubmit={handleSaveManualTransaction}>
+                  <div>
+                    <label className="text-sm font-bold" htmlFor="manual-title">
+                      내역명
+                    </label>
+                    <input
+                      id="manual-title"
+                      value={manualTitle}
+                      onChange={(event) => setManualTitle(event.target.value)}
+                      className="mt-2 h-11 w-full rounded-lg border border-[#d8cebb] bg-white px-3 text-base outline-none focus:border-[#2f9f8f]"
+                      placeholder="예: 점심, 커피, 택시"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-[1fr_104px] gap-3">
+                    <div>
+                      <label className="text-sm font-bold" htmlFor="manual-amount">
+                        금액
+                      </label>
+                      <div className="mt-2 flex h-11 items-center gap-2 rounded-lg border border-[#d8cebb] bg-white px-3 focus-within:border-[#2f9f8f]">
+                        <CircleDollarSign size={17} className="text-[#257d72]" />
+                        <input
+                          id="manual-amount"
+                          value={manualAmount}
+                          onChange={(event) => setManualAmount(event.target.value)}
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          inputMode="decimal"
+                          className="min-w-0 flex-1 bg-transparent text-base outline-none"
+                          placeholder="0"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-sm font-bold" htmlFor="manual-currency">
+                        통화
+                      </label>
+                      <select
+                        id="manual-currency"
+                        value={manualCurrency}
+                        onChange={(event) =>
+                          setManualCurrency(
+                            event.target.value as (typeof manualCurrencies)[number],
+                          )
+                        }
+                        className="mt-2 h-11 w-full rounded-lg border border-[#d8cebb] bg-white px-3 text-sm font-bold outline-none focus:border-[#2f9f8f]"
+                      >
+                        {manualCurrencies.map((currency) => (
+                          <option key={currency} value={currency}>
+                            {currency}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-sm font-bold" htmlFor="manual-category">
+                        카테고리
+                      </label>
+                      <select
+                        id="manual-category"
+                        value={manualCategory}
+                        onChange={(event) =>
+                          setManualCategory(
+                            event.target.value as (typeof manualCategories)[number],
+                          )
+                        }
+                        className="mt-2 h-11 w-full rounded-lg border border-[#d8cebb] bg-white px-3 text-sm font-bold outline-none focus:border-[#2f9f8f]"
+                      >
+                        {manualCategories.map((category) => (
+                          <option key={category} value={category}>
+                            {category}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-sm font-bold" htmlFor="manual-time">
+                        시간
+                      </label>
+                      <input
+                        id="manual-time"
+                        type="time"
+                        value={manualTime}
+                        onChange={(event) => setManualTime(event.target.value)}
+                        className="mt-2 h-11 w-full rounded-lg border border-[#d8cebb] bg-white px-3 text-sm font-bold outline-none focus:border-[#2f9f8f]"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-bold" htmlFor="manual-place">
+                      장소
+                    </label>
+                    <input
+                      id="manual-place"
+                      value={manualPlace}
+                      onChange={(event) => setManualPlace(event.target.value)}
+                      className="mt-2 h-11 w-full rounded-lg border border-[#d8cebb] bg-white px-3 text-base outline-none focus:border-[#2f9f8f]"
+                      placeholder="선택 입력"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-bold" htmlFor="manual-memo">
+                      메모
+                    </label>
+                    <textarea
+                      id="manual-memo"
+                      value={manualMemo}
+                      onChange={(event) => setManualMemo(event.target.value)}
+                      className="mt-2 min-h-20 w-full resize-none rounded-lg border border-[#d8cebb] bg-white px-3 py-2 text-base outline-none focus:border-[#2f9f8f]"
+                      placeholder="선택 입력"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={isSavingManual}
+                    className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-[#10231f] text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-[#8a958f]"
+                  >
+                    <Check size={17} />
+                    {isSavingManual ? "저장 중" : "저장"}
+                  </button>
+                </form>
+              </section>
+            </div>
+          </div>
+        ) : null}
       </div>
     </main>
   );

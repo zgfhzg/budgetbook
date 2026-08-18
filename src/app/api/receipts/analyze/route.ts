@@ -32,14 +32,20 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (!receiptText.trim()) {
+    return NextResponse.json(
+      { error: "실제 OCR/AI 분석 제공자가 아직 연결되지 않았습니다." },
+      { status: 501 },
+    );
+  }
+
   const analysis = createReceiptAnalysisFromText(receiptText, sourceName);
-  const hasVisionProvider = Boolean(process.env.OPENAI_API_KEY);
 
   return NextResponse.json({
     analysis,
     pipeline: {
       billingMode: "manual-trigger-only",
-      provider: hasVisionProvider ? "openai-vision-ready" : "mock-no-api-key",
+      provider: "text-parser",
       ocr: file || contentType.includes("application/json") ? "pending-provider" : "manual-text",
       localeDetection: "enabled",
       globalCurrencies: ["KRW", "HKD", "USD", "JPY", "EUR", "GBP"],

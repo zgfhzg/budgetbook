@@ -24,78 +24,6 @@ export type ReceiptAnalysis = {
   items: ReceiptItem[];
 };
 
-export const receiptSamples: Record<string, ReceiptAnalysis> = {
-  korea: {
-    sourceName: "emart24-seoul.jpg",
-    country: "대한민국",
-    language: "한국어",
-    currency: "KRW",
-    store: {
-      name: "이마트24 성수포레점",
-      address: "서울 성동구 왕십리로 96",
-      phone: "02-1234-5678",
-    },
-    purchasedAt: "2026-07-20T18:42:00+09:00",
-    subtotal: 13210,
-    tax: 1201,
-    tip: 0,
-    total: 13210,
-    confidence: 0.94,
-    items: [
-      { name: "우유 900ml", quantity: 1, unitPrice: 2980, totalPrice: 2980 },
-      { name: "계란 10구", quantity: 1, unitPrice: 5490, totalPrice: 5490 },
-      { name: "바나나", quantity: 1, unitPrice: 3980, totalPrice: 3980 },
-      { name: "종량제 봉투", quantity: 1, unitPrice: 760, totalPrice: 760 },
-    ],
-  },
-  hongkong: {
-    sourceName: "wellcome-central-hk.jpg",
-    country: "홍콩",
-    language: "English",
-    currency: "HKD",
-    store: {
-      name: "Wellcome",
-      address: "Shop B, G/F, 9 Queen's Road Central, Hong Kong",
-      phone: "+852 2857 8600",
-    },
-    purchasedAt: "2026-07-18T20:14:00+08:00",
-    subtotal: 186.4,
-    tax: 0,
-    tip: 0,
-    total: 186.4,
-    confidence: 0.91,
-    items: [
-      { name: "Egg Tart 2pcs", quantity: 1, unitPrice: 28.0, totalPrice: 28.0 },
-      { name: "Milk Tea", quantity: 2, unitPrice: 18.5, totalPrice: 37.0 },
-      { name: "Pineapple Bun", quantity: 3, unitPrice: 9.8, totalPrice: 29.4 },
-      { name: "Roast Pork Rice", quantity: 1, unitPrice: 92.0, totalPrice: 92.0 },
-    ],
-  },
-  japan: {
-    sourceName: "lawson-tokyo.jpg",
-    country: "일본",
-    language: "日本語",
-    currency: "JPY",
-    store: {
-      name: "ローソン 渋谷三丁目店",
-      address: "東京都渋谷区渋谷3-8-12",
-      phone: "+81 3-3498-1234",
-    },
-    purchasedAt: "2026-07-19T09:27:00+09:00",
-    subtotal: 1452,
-    tax: 116,
-    tip: 0,
-    total: 1568,
-    confidence: 0.89,
-    items: [
-      { name: "おにぎり 鮭", quantity: 2, unitPrice: 168, totalPrice: 336 },
-      { name: "アイスコーヒー", quantity: 1, unitPrice: 214, totalPrice: 214 },
-      { name: "サンドイッチ", quantity: 1, unitPrice: 398, totalPrice: 398 },
-      { name: "からあげクン", quantity: 1, unitPrice: 504, totalPrice: 504 },
-    ],
-  },
-};
-
 const currencySymbols: Record<string, string> = {
   KRW: "₩",
   USD: "$",
@@ -170,22 +98,15 @@ export function createReceiptAnalysisFromText(
         totalPrice: amount,
       };
     });
-  const sampleKey =
-    locale.currency === "JPY"
-      ? "japan"
-      : locale.currency === "KRW"
-        ? "korea"
-        : "hongkong";
-  const fallback = receiptSamples[sampleKey];
   const parsedSubtotal = findLabeledAmount(["subtotal", "sub total", "소계"]);
   const parsedTax = findLabeledAmount(["sales tax", "tax", "vat", "gst", "세금"]);
   const parsedTip = findLabeledAmount(["tip", "gratuity", "service charge", "서비스차지"]);
   const parsedTotal = findLabeledAmount(["grand total", "total", "amount paid", "합계"]);
   const itemSubtotal = items.reduce((sum, item) => sum + item.totalPrice, 0);
-  const subtotal = parsedSubtotal || itemSubtotal || fallback.subtotal;
+  const subtotal = parsedSubtotal || itemSubtotal;
   const tax =
-    parsedTax || (locale.currency === "USD" && itemSubtotal > 0 ? Number((itemSubtotal * 0.089).toFixed(2)) : fallback.tax);
-  const tip = parsedTip || fallback.tip;
+    parsedTax || (locale.currency === "USD" && itemSubtotal > 0 ? Number((itemSubtotal * 0.089).toFixed(2)) : 0);
+  const tip = parsedTip;
   const total = parsedTotal || Number((subtotal + tax + tip).toFixed(2));
 
   return {
@@ -202,7 +123,7 @@ export function createReceiptAnalysisFromText(
     tip,
     total,
     confidence: items.length > 0 ? 0.72 : 0.42,
-    items: items.length > 0 ? items : fallback.items,
+    items,
   };
 }
 
