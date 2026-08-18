@@ -47,9 +47,15 @@ type TransactionItem = {
   time: string;
 };
 
+type UploadedReceipt = {
+  id: string;
+  storagePath: string;
+  fileName: string;
+};
+
 const sampleTabs = [
   { key: "korea", label: "한국" },
-  { key: "usa", label: "미국" },
+  { key: "hongkong", label: "홍콩" },
   { key: "japan", label: "일본" },
 ] as const;
 
@@ -86,19 +92,41 @@ function toTransactionItem(row: TransactionRow): TransactionItem {
   };
 }
 
+function sanitizeStorageFileName(fileName: string) {
+  const [name = "receipt", ...extensionParts] = fileName.split(".");
+  const extension = extensionParts.pop();
+  const safeName =
+    name
+      .normalize("NFKD")
+      .replace(/[^\w-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .toLowerCase() || "receipt";
+
+  return extension
+    ? `${safeName}.${extension.toLowerCase().replace(/[^\w]+/g, "")}`
+    : safeName;
+}
+
 export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
   const [selectedDate, setSelectedDate] = useState("20");
   const [receiptName, setReceiptName] = useState("");
-  const [sampleKey, setSampleKey] = useState<keyof typeof receiptSamples>("usa");
+  const [uploadedReceipt, setUploadedReceipt] = useState<UploadedReceipt | null>(
+    null,
+  );
+  const [sampleKey, setSampleKey] =
+    useState<keyof typeof receiptSamples>("hongkong");
   const [isReviewed, setIsReviewed] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [transactions, setTransactions] = useState<TransactionItem[]>([]);
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(true);
+  const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
   const [isSavingReceipt, setIsSavingReceipt] = useState(false);
   const [databaseMessage, setDatabaseMessage] = useState("");
   const [databaseError, setDatabaseError] = useState("");
 
-  const analysis: ReceiptAnalysis = receiptSamples[sampleKey];
+  const analysis: ReceiptAnalysis =
+    receiptSamples[sampleKey] ?? receiptSamples.hongkong;
   const localDate = getLocalDate(selectedDate);
   const dailyTotal = useMemo(
     () => transactions.reduce((total, item) => total + item.amount, 0),
@@ -140,15 +168,83 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
     return () => window.clearTimeout(task);
   }, [loadTransactions, localDate]);
 
-  function handleReceipt(event: ChangeEvent<HTMLInputElement>) {
+  async function handleReceipt(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     setReceiptName(file?.name ?? "");
+    setUploadedReceipt(null);
     setIsReviewed(false);
+    setDatabaseMessage("");
+    setDatabaseError("");
+
+    if (!file) {
+      return;
+    }
+
+    setIsUploadingReceipt(true);
+
+    const supabase = getSupabaseBrowserClient();
+    const receiptId =
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const storagePath = `${userId}/${receiptId}/original-${sanitizeStorageFileName(
+      file.name,
+    )}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("receipts")
+      .upload(storagePath, file, {
+        contentType: file.type || "application/octet-stream",
+        upsert: false,
+      });
+
+    if (uploadError) {
+      setDatabaseError(uploadError.message);
+      setIsUploadingReceipt(false);
+      event.target.value = "";
+      return;
+    }
+
+    const { data: receipt, error: receiptError } = await supabase
+      .from("receipts")
+      .insert({
+        id: receiptId,
+        user_id: userId,
+        status: "uploaded",
+        storage_path: storagePath,
+        source_file_name: file.name,
+        mime_type: file.type || null,
+        parsed_json: {
+          upload: {
+            size: file.size,
+            uploadedAt: new Date().toISOString(),
+          },
+        },
+      })
+      .select("id, storage_path, source_file_name")
+      .single();
+
+    if (receiptError) {
+      await supabase.storage.from("receipts").remove([storagePath]);
+      setDatabaseError(receiptError.message);
+      setIsUploadingReceipt(false);
+      event.target.value = "";
+      return;
+    }
+
+    setUploadedReceipt({
+      id: receipt.id,
+      storagePath: receipt.storage_path,
+      fileName: receipt.source_file_name ?? file.name,
+    });
+    setDatabaseMessage("영수증 원본을 Storage에 업로드했습니다.");
+    setIsUploadingReceipt(false);
   }
 
   function selectSample(key: keyof typeof receiptSamples) {
     setSampleKey(key);
     setReceiptName("");
+    setUploadedReceipt(null);
     setIsReviewed(false);
     setDatabaseMessage("");
     setDatabaseError("");
@@ -208,29 +304,43 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
       return;
     }
 
-    const storagePath = `${userId}/confirmed/${Date.now()}-${analysis.sourceName}`;
-    const { data: receipt, error: receiptError } = await supabase
-      .from("receipts")
-      .insert({
-        user_id: userId,
-        store_id: store.id,
-        transaction_id: transaction.id,
-        status: "confirmed",
-        storage_path: storagePath,
-        source_file_name: receiptName || analysis.sourceName,
-        country: analysis.country,
-        language: analysis.language,
-        currency: analysis.currency,
-        purchased_at: analysis.purchasedAt,
-        subtotal: analysis.subtotal,
-        tax: analysis.tax,
-        tip: analysis.tip,
-        total: analysis.total,
-        confidence: analysis.confidence,
-        parsed_json: analysis,
-      })
-      .select("id")
-      .single();
+    const fallbackStoragePath = `${userId}/confirmed/${Date.now()}-${analysis.sourceName}`;
+    const receiptPayload = {
+      user_id: userId,
+      store_id: store.id,
+      transaction_id: transaction.id,
+      status: "confirmed" as const,
+      storage_path: uploadedReceipt?.storagePath ?? fallbackStoragePath,
+      source_file_name:
+        uploadedReceipt?.fileName ?? (receiptName || analysis.sourceName),
+      country: analysis.country,
+      language: analysis.language,
+      currency: analysis.currency,
+      purchased_at: analysis.purchasedAt,
+      subtotal: analysis.subtotal,
+      tax: analysis.tax,
+      tip: analysis.tip,
+      total: analysis.total,
+      confidence: analysis.confidence,
+      parsed_json: analysis,
+    };
+    const receiptRequest = uploadedReceipt
+      ? supabase
+          .from("receipts")
+          .update(receiptPayload)
+          .eq("id", uploadedReceipt.id)
+          .eq("user_id", userId)
+          .select("id")
+          .single()
+      : supabase
+          .from("receipts")
+          .insert({
+            ...receiptPayload,
+            storage_path: fallbackStoragePath,
+          })
+          .select("id")
+          .single();
+    const { data: receipt, error: receiptError } = await receiptRequest;
 
     if (receiptError) {
       setDatabaseError(receiptError.message);
@@ -420,7 +530,9 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
                 </p>
               </div>
               <label
-                className="grid size-11 cursor-pointer place-items-center rounded-lg bg-[#f3bf4f] text-[#10231f]"
+                className={`grid size-11 place-items-center rounded-lg bg-[#f3bf4f] text-[#10231f] ${
+                  isUploadingReceipt ? "cursor-wait opacity-70" : "cursor-pointer"
+                }`}
                 aria-label="영수증 첨부"
                 title="영수증 첨부"
               >
@@ -430,6 +542,7 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
                   type="file"
                   accept="image/*"
                   capture="environment"
+                  disabled={isUploadingReceipt}
                   onChange={handleReceipt}
                 />
               </label>
@@ -462,13 +575,26 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
                     {receiptName || analysis.sourceName}
                   </p>
                   <p className="mt-1 text-sm text-[#6f756b]">
-                    {receiptName ? "OCR 연결 대기 - 구조화 준비됨" : "샘플 분석 결과"}
+                    {isUploadingReceipt
+                      ? "Supabase Storage 업로드 중"
+                      : uploadedReceipt
+                        ? "원본 업로드 완료 - OCR 연결 대기"
+                        : receiptName
+                          ? "업로드 준비 중"
+                          : "샘플 분석 결과"}
                   </p>
                 </div>
                 <div className="rounded-lg bg-white px-2 py-1 text-xs font-bold text-[#257d72]">
-                  {Math.round(analysis.confidence * 100)}%
+                  {uploadedReceipt ? "저장됨" : `${Math.round(analysis.confidence * 100)}%`}
                 </div>
               </div>
+
+              {uploadedReceipt ? (
+                <div className="mt-3 rounded-lg bg-white p-3 text-xs leading-5 text-[#5f6d67]">
+                  <p className="font-bold text-[#257d72]">Storage path</p>
+                  <p className="break-all">{uploadedReceipt.storagePath}</p>
+                </div>
+              ) : null}
 
               <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
                 <div className="rounded-lg bg-white p-2">
@@ -539,7 +665,7 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
               <button
                 type="button"
                 onClick={handleSaveReceipt}
-                disabled={isSavingReceipt || isReviewed}
+                disabled={isSavingReceipt || isUploadingReceipt || isReviewed}
                 className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#10231f] text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-[#8a958f]"
               >
                 <Check size={17} />

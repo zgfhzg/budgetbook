@@ -48,27 +48,27 @@ export const receiptSamples: Record<string, ReceiptAnalysis> = {
       { name: "종량제 봉투", quantity: 1, unitPrice: 760, totalPrice: 760 },
     ],
   },
-  usa: {
-    sourceName: "trader-joes-nyc.jpg",
-    country: "미국",
+  hongkong: {
+    sourceName: "wellcome-central-hk.jpg",
+    country: "홍콩",
     language: "English",
-    currency: "USD",
+    currency: "HKD",
     store: {
-      name: "Trader Joe's",
-      address: "675 6th Ave, New York, NY 10010",
-      phone: "+1 212-255-2106",
+      name: "Wellcome",
+      address: "Shop B, G/F, 9 Queen's Road Central, Hong Kong",
+      phone: "+852 2857 8600",
     },
-    purchasedAt: "2026-07-18T20:14:00-04:00",
-    subtotal: 31.76,
-    tax: 2.83,
+    purchasedAt: "2026-07-18T20:14:00+08:00",
+    subtotal: 186.4,
+    tax: 0,
     tip: 0,
-    total: 34.59,
+    total: 186.4,
     confidence: 0.91,
     items: [
-      { name: "Organic Bananas", quantity: 1, unitPrice: 2.19, totalPrice: 2.19 },
-      { name: "Greek Yogurt", quantity: 2, unitPrice: 4.49, totalPrice: 8.98 },
-      { name: "Chicken Salad", quantity: 1, unitPrice: 7.99, totalPrice: 7.99 },
-      { name: "Cold Brew Coffee", quantity: 3, unitPrice: 4.2, totalPrice: 12.6 },
+      { name: "Egg Tart 2pcs", quantity: 1, unitPrice: 28.0, totalPrice: 28.0 },
+      { name: "Milk Tea", quantity: 2, unitPrice: 18.5, totalPrice: 37.0 },
+      { name: "Pineapple Bun", quantity: 3, unitPrice: 9.8, totalPrice: 29.4 },
+      { name: "Roast Pork Rice", quantity: 1, unitPrice: 92.0, totalPrice: 92.0 },
     ],
   },
   japan: {
@@ -100,6 +100,7 @@ const currencySymbols: Record<string, string> = {
   KRW: "₩",
   USD: "$",
   JPY: "¥",
+  HKD: "HK$",
   EUR: "€",
   GBP: "£",
 };
@@ -119,6 +120,10 @@ export function detectReceiptLocale(text: string) {
 
   if (/[가-힣]/.test(text)) {
     return { country: "대한민국", language: "한국어", currency: "KRW" };
+  }
+
+  if (/HK\$|hong kong|hkd|octopus|queen's road|kowloon|central/i.test(text)) {
+    return { country: "홍콩", language: "English", currency: "HKD" };
   }
 
   if (/\$|sales tax|tip|subtotal/i.test(text)) {
@@ -166,7 +171,11 @@ export function createReceiptAnalysisFromText(
       };
     });
   const sampleKey =
-    locale.currency === "JPY" ? "japan" : locale.currency === "KRW" ? "korea" : "usa";
+    locale.currency === "JPY"
+      ? "japan"
+      : locale.currency === "KRW"
+        ? "korea"
+        : "hongkong";
   const fallback = receiptSamples[sampleKey];
   const parsedSubtotal = findLabeledAmount(["subtotal", "sub total", "소계"]);
   const parsedTax = findLabeledAmount(["sales tax", "tax", "vat", "gst", "세금"]);

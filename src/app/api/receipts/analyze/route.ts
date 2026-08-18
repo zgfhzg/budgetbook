@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
     pipeline: {
       ocr: file instanceof File ? "pending-provider" : "manual-text",
       localeDetection: "enabled",
-      globalCurrencies: ["KRW", "USD", "JPY", "EUR", "GBP"],
+      globalCurrencies: ["KRW", "HKD", "USD", "JPY", "EUR", "GBP"],
       placeEnrichment: "ready-for-google-places-or-maps-provider",
     },
   });
