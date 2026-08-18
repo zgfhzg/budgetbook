@@ -79,6 +79,7 @@ type UploadedReceipt = {
 
 type AnalyzeReceiptResponse = {
   analysis?: ReceiptAnalysis;
+  ocrText?: string;
   pipeline?: {
     provider?: string;
   };
@@ -436,9 +437,21 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
       return;
     }
 
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+
+    if (!accessToken) {
+      setDatabaseError("로그인 세션을 다시 확인해 주세요.");
+      setIsAnalyzingReceipt(false);
+      return;
+    }
+
     const response = await fetch("/api/receipts/analyze", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({
         receiptId: uploadedReceipt.id,
         storagePath: uploadedReceipt.storagePath,
@@ -476,6 +489,7 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
           analysis: result.analysis,
           pipeline: result.pipeline,
         },
+        ocr_text: result.ocrText ?? null,
         error_message: null,
       })
       .eq("id", uploadedReceipt.id)
