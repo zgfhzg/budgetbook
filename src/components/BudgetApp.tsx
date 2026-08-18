@@ -46,6 +46,10 @@ type TransactionRow = Database["public"]["Tables"]["transactions"]["Row"] & {
   categories: CategoryRow | null;
   stores: StoreRow | null;
 };
+type StoreOptionRow = Pick<
+  Database["public"]["Tables"]["stores"]["Row"],
+  "id" | "name" | "address"
+>;
 type ReceiptRow = Pick<
   Database["public"]["Tables"]["receipts"]["Row"],
   | "id"
@@ -187,17 +191,20 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
     useState<(typeof manualCategories)[number]>("식비");
   const [manualCurrency, setManualCurrency] =
     useState<(typeof manualCurrencies)[number]>("KRW");
+  const [manualStoreId, setManualStoreId] = useState<string | null>(null);
   const [manualPlace, setManualPlace] = useState("");
   const [manualTime, setManualTime] = useState("12:00");
   const [manualMemo, setManualMemo] = useState("");
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(true);
   const [isLoadingReceipts, setIsLoadingReceipts] = useState(false);
+  const [isLoadingStores, setIsLoadingStores] = useState(false);
   const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
   const [isAnalyzingReceipt, setIsAnalyzingReceipt] = useState(false);
   const [isSavingManual, setIsSavingManual] = useState(false);
   const [isSavingReceipt, setIsSavingReceipt] = useState(false);
   const [databaseMessage, setDatabaseMessage] = useState("");
   const [databaseError, setDatabaseError] = useState("");
+  const [storeOptions, setStoreOptions] = useState<StoreOptionRow[]>([]);
 
   const calendarDays = useMemo(() => getWeekDays(selectedDate), [selectedDate]);
   const calendarTitle = useMemo(() => {
@@ -289,6 +296,24 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
     setIsLoadingReceipts(false);
   }, [userId]);
 
+  const loadStoreOptions = useCallback(async () => {
+    setIsLoadingStores(true);
+
+    const supabase = getSupabaseBrowserClient();
+    const { data, error } = await supabase
+      .from("stores")
+      .select("id, name, address")
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false })
+      .limit(20);
+
+    if (!error) {
+      setStoreOptions(data ?? []);
+    }
+
+    setIsLoadingStores(false);
+  }, [userId]);
+
   useEffect(() => {
     const task = window.setTimeout(() => {
       void loadTransactions(localDate);
@@ -305,6 +330,13 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
     if (nextTab === "receipts") {
       void loadReceipts();
     }
+  }
+
+  function openManualForm() {
+    setIsManualFormOpen(true);
+    setDatabaseMessage("");
+    setDatabaseError("");
+    void loadStoreOptions();
   }
 
   async function handleReceipt(event: ChangeEvent<HTMLInputElement>) {
@@ -469,9 +501,15 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
     setManualAmount("");
     setManualCategory("식비");
     setManualCurrency("KRW");
+    setManualStoreId(null);
     setManualPlace("");
     setManualTime("12:00");
     setManualMemo("");
+  }
+
+  function selectManualStore(store: StoreOptionRow) {
+    setManualStoreId(store.id);
+    setManualPlace(store.name);
   }
 
   async function handleSaveManualTransaction(event: FormEvent<HTMLFormElement>) {
@@ -504,23 +542,33 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
       .maybeSingle();
 
     let storeId: string | null = null;
-    if (normalizedPlace) {
-      const { data: store, error: storeError } = await supabase
-        .from("stores")
-        .insert({
-          user_id: userId,
-          name: normalizedPlace,
-        })
-        .select("id")
-        .single();
+    if (manualStoreId) {
+      storeId = manualStoreId;
+    } else if (normalizedPlace) {
+      const existingStore = storeOptions.find(
+        (store) => store.name.trim().toLowerCase() === normalizedPlace.toLowerCase(),
+      );
 
-      if (storeError) {
-        setDatabaseError(storeError.message);
-        setIsSavingManual(false);
-        return;
+      if (existingStore) {
+        storeId = existingStore.id;
+      } else {
+        const { data: store, error: storeError } = await supabase
+          .from("stores")
+          .insert({
+            user_id: userId,
+            name: normalizedPlace,
+          })
+          .select("id")
+          .single();
+
+        if (storeError) {
+          setDatabaseError(storeError.message);
+          setIsSavingManual(false);
+          return;
+        }
+
+        storeId = store.id;
       }
-
-      storeId = store.id;
     }
 
     const occurredAt = new Date(`${localDate}T${manualTime}:00`).toISOString();
@@ -547,6 +595,7 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
     setIsManualFormOpen(false);
     setDatabaseMessage("수기 내역을 저장했습니다.");
     await loadTransactions(localDate);
+    await loadStoreOptions();
     setIsSavingManual(false);
   }
 
@@ -783,7 +832,7 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
             <h2 className="text-lg font-bold">내역</h2>
             <button
               type="button"
-              onClick={() => setIsManualFormOpen(true)}
+              onClick={openManualForm}
               className="grid size-9 place-items-center rounded-lg bg-[#2f9f8f] text-white"
               aria-label="직접 입력"
               title="직접 입력"
@@ -1252,10 +1301,39 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
                     <input
                       id="manual-place"
                       value={manualPlace}
-                      onChange={(event) => setManualPlace(event.target.value)}
+                      onChange={(event) => {
+                        setManualPlace(event.target.value);
+                        setManualStoreId(null);
+                      }}
                       className="mt-2 h-11 w-full rounded-lg border border-[#d8cebb] bg-white px-3 text-base outline-none focus:border-[#2f9f8f]"
                       placeholder="선택 입력"
                     />
+                    {isLoadingStores ? (
+                      <p className="mt-2 text-xs font-semibold text-[#63746f]">
+                        장소 불러오는 중
+                      </p>
+                    ) : null}
+                    {!isLoadingStores && storeOptions.length > 0 ? (
+                      <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+                        {storeOptions.map((store) => (
+                          <button
+                            key={store.id}
+                            type="button"
+                            onClick={() => selectManualStore(store)}
+                            className={`min-w-28 rounded-lg border px-3 py-2 text-left text-xs ${
+                              manualStoreId === store.id
+                                ? "border-[#10231f] bg-[#10231f] text-white"
+                                : "border-[#d8cebb] bg-white text-[#5e746f]"
+                            }`}
+                          >
+                            <span className="block truncate font-bold">{store.name}</span>
+                            {store.address ? (
+                              <span className="mt-1 block truncate">{store.address}</span>
+                            ) : null}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div>
