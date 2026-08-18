@@ -14,6 +14,7 @@ import {
   Plus,
   ReceiptText,
   Search,
+  Sparkles,
   Settings,
   Store,
   LogOut,
@@ -53,10 +54,17 @@ type UploadedReceipt = {
   fileName: string;
 };
 
+type AnalyzeReceiptResponse = {
+  analysis?: ReceiptAnalysis;
+  pipeline?: {
+    provider?: string;
+  };
+  error?: string;
+};
+
 const sampleTabs = [
   { key: "korea", label: "한국" },
   { key: "hongkong", label: "홍콩" },
-  { key: "japan", label: "일본" },
 ] as const;
 
 const money = new Intl.NumberFormat("ko-KR");
@@ -114,6 +122,9 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
   const [uploadedReceipt, setUploadedReceipt] = useState<UploadedReceipt | null>(
     null,
   );
+  const [analyzedReceipt, setAnalyzedReceipt] = useState<ReceiptAnalysis | null>(
+    null,
+  );
   const [sampleKey, setSampleKey] =
     useState<keyof typeof receiptSamples>("hongkong");
   const [isReviewed, setIsReviewed] = useState(false);
@@ -121,12 +132,30 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
   const [transactions, setTransactions] = useState<TransactionItem[]>([]);
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(true);
   const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
+  const [isAnalyzingReceipt, setIsAnalyzingReceipt] = useState(false);
   const [isSavingReceipt, setIsSavingReceipt] = useState(false);
   const [databaseMessage, setDatabaseMessage] = useState("");
   const [databaseError, setDatabaseError] = useState("");
 
   const analysis: ReceiptAnalysis =
-    receiptSamples[sampleKey] ?? receiptSamples.hongkong;
+    analyzedReceipt ?? receiptSamples[sampleKey] ?? receiptSamples.hongkong;
+  const requiresAnalysisBeforeSave = Boolean(uploadedReceipt && !analyzedReceipt);
+  const receiptStatusLabel = isUploadingReceipt
+    ? "Supabase Storage 업로드 중"
+    : isAnalyzingReceipt
+      ? "사용자 요청으로 분석 중"
+      : analyzedReceipt
+        ? "분석 완료 - 확정 대기"
+        : uploadedReceipt
+          ? "원본 업로드 완료 - AI 분석 대기"
+          : receiptName
+            ? "업로드 준비 중"
+            : "샘플 분석 결과";
+  const receiptBadgeLabel = analyzedReceipt
+    ? `${Math.round(analysis.confidence * 100)}%`
+    : uploadedReceipt
+      ? "업로드됨"
+      : `${Math.round(analysis.confidence * 100)}%`;
   const localDate = getLocalDate(selectedDate);
   const dailyTotal = useMemo(
     () => transactions.reduce((total, item) => total + item.amount, 0),
@@ -172,6 +201,7 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
     const file = event.target.files?.[0];
     setReceiptName(file?.name ?? "");
     setUploadedReceipt(null);
+    setAnalyzedReceipt(null);
     setIsReviewed(false);
     setDatabaseMessage("");
     setDatabaseError("");
@@ -241,16 +271,105 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
     setIsUploadingReceipt(false);
   }
 
+  async function handleAnalyzeReceipt() {
+    if (!uploadedReceipt) {
+      setDatabaseError("먼저 영수증 이미지를 업로드해 주세요.");
+      return;
+    }
+
+    setIsAnalyzingReceipt(true);
+    setDatabaseMessage("");
+    setDatabaseError("");
+
+    const supabase = getSupabaseBrowserClient();
+    const { error: processingError } = await supabase
+      .from("receipts")
+      .update({ status: "processing" })
+      .eq("id", uploadedReceipt.id)
+      .eq("user_id", userId);
+
+    if (processingError) {
+      setDatabaseError(processingError.message);
+      setIsAnalyzingReceipt(false);
+      return;
+    }
+
+    const response = await fetch("/api/receipts/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        receiptId: uploadedReceipt.id,
+        storagePath: uploadedReceipt.storagePath,
+        sourceName: uploadedReceipt.fileName,
+      }),
+    });
+    const result = (await response.json()) as AnalyzeReceiptResponse;
+
+    if (!response.ok || !result.analysis) {
+      const message = result.error ?? "영수증 분석에 실패했습니다.";
+      await supabase
+        .from("receipts")
+        .update({ status: "failed", error_message: message })
+        .eq("id", uploadedReceipt.id)
+        .eq("user_id", userId);
+      setDatabaseError(message);
+      setIsAnalyzingReceipt(false);
+      return;
+    }
+
+    const { error: completedError } = await supabase
+      .from("receipts")
+      .update({
+        status: "completed",
+        country: result.analysis.country,
+        language: result.analysis.language,
+        currency: result.analysis.currency,
+        purchased_at: result.analysis.purchasedAt,
+        subtotal: result.analysis.subtotal,
+        tax: result.analysis.tax,
+        tip: result.analysis.tip,
+        total: result.analysis.total,
+        confidence: result.analysis.confidence,
+        parsed_json: {
+          analysis: result.analysis,
+          pipeline: result.pipeline,
+        },
+        error_message: null,
+      })
+      .eq("id", uploadedReceipt.id)
+      .eq("user_id", userId);
+
+    if (completedError) {
+      setDatabaseError(completedError.message);
+      setIsAnalyzingReceipt(false);
+      return;
+    }
+
+    setAnalyzedReceipt(result.analysis);
+    setDatabaseMessage(
+      result.pipeline?.provider === "mock-no-api-key"
+        ? "분석 흐름을 확인했습니다. OpenAI API 키 연결 전이라 샘플 결과를 사용합니다."
+        : "AI 분석이 완료되었습니다.",
+    );
+    setIsAnalyzingReceipt(false);
+  }
+
   function selectSample(key: keyof typeof receiptSamples) {
     setSampleKey(key);
     setReceiptName("");
     setUploadedReceipt(null);
+    setAnalyzedReceipt(null);
     setIsReviewed(false);
     setDatabaseMessage("");
     setDatabaseError("");
   }
 
   async function handleSaveReceipt() {
+    if (requiresAnalysisBeforeSave) {
+      setDatabaseError("업로드한 영수증은 AI 분석 후 확정할 수 있습니다.");
+      return;
+    }
+
     setIsSavingReceipt(true);
     setDatabaseMessage("");
     setDatabaseError("");
@@ -548,7 +667,7 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
               </label>
             </div>
 
-            <div className="mt-4 grid grid-cols-3 gap-2">
+            <div className="mt-4 grid grid-cols-2 gap-2">
               {sampleTabs.map((sample) => (
                 <button
                   key={sample.key}
@@ -575,17 +694,11 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
                     {receiptName || analysis.sourceName}
                   </p>
                   <p className="mt-1 text-sm text-[#6f756b]">
-                    {isUploadingReceipt
-                      ? "Supabase Storage 업로드 중"
-                      : uploadedReceipt
-                        ? "원본 업로드 완료 - OCR 연결 대기"
-                        : receiptName
-                          ? "업로드 준비 중"
-                          : "샘플 분석 결과"}
+                    {receiptStatusLabel}
                   </p>
                 </div>
                 <div className="rounded-lg bg-white px-2 py-1 text-xs font-bold text-[#257d72]">
-                  {uploadedReceipt ? "저장됨" : `${Math.round(analysis.confidence * 100)}%`}
+                  {receiptBadgeLabel}
                 </div>
               </div>
 
@@ -594,6 +707,22 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
                   <p className="font-bold text-[#257d72]">Storage path</p>
                   <p className="break-all">{uploadedReceipt.storagePath}</p>
                 </div>
+              ) : null}
+
+              {uploadedReceipt ? (
+                <button
+                  type="button"
+                  onClick={handleAnalyzeReceipt}
+                  disabled={isAnalyzingReceipt || isSavingReceipt || isReviewed}
+                  className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-[#10231f] bg-white text-sm font-bold text-[#10231f] disabled:cursor-not-allowed disabled:border-[#b5bdb8] disabled:text-[#8a958f]"
+                >
+                  <Sparkles size={17} />
+                  {isAnalyzingReceipt
+                    ? "분석 중"
+                    : analyzedReceipt
+                      ? "재분석하기"
+                      : "AI 분석하기"}
+                </button>
               ) : null}
 
               <div className="mt-4 grid grid-cols-3 gap-2 text-xs">
@@ -665,7 +794,13 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
               <button
                 type="button"
                 onClick={handleSaveReceipt}
-                disabled={isSavingReceipt || isUploadingReceipt || isReviewed}
+                disabled={
+                  isSavingReceipt ||
+                  isUploadingReceipt ||
+                  isAnalyzingReceipt ||
+                  requiresAnalysisBeforeSave ||
+                  isReviewed
+                }
                 className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#10231f] text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-[#8a958f]"
               >
                 <Check size={17} />
@@ -673,6 +808,8 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
                   ? "저장 중"
                   : isReviewed
                     ? "확정됨"
+                    : requiresAnalysisBeforeSave
+                      ? "분석 후 확정 가능"
                     : "확정하고 가계부에 저장"}
               </button>
 

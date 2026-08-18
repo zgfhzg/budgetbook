@@ -2,12 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 import { createReceiptAnalysisFromText } from "@/lib/receiptAnalysis";
 
 export async function POST(request: NextRequest) {
-  const formData = await request.formData();
-  const file = formData.get("file");
-  const receiptText = String(formData.get("receiptText") ?? "");
-  const sourceName = file instanceof File ? file.name : "manual-receipt.txt";
+  const contentType = request.headers.get("content-type") ?? "";
+  let file: File | null = null;
+  let receiptText = "";
+  let sourceName = "manual-receipt.txt";
 
-  if (!receiptText.trim() && !(file instanceof File)) {
+  if (contentType.includes("application/json")) {
+    const body = (await request.json()) as {
+      receiptText?: string;
+      sourceName?: string;
+      storagePath?: string;
+    };
+
+    receiptText = body.receiptText ?? "";
+    sourceName =
+      body.sourceName ?? body.storagePath?.split("/").pop() ?? sourceName;
+  } else {
+    const formData = await request.formData();
+    const formFile = formData.get("file");
+    file = formFile instanceof File ? formFile : null;
+    receiptText = String(formData.get("receiptText") ?? "");
+    sourceName = file ? file.name : sourceName;
+  }
+
+  if (!receiptText.trim() && !file && !contentType.includes("application/json")) {
     return NextResponse.json(
       { error: "receiptText 또는 file이 필요합니다." },
       { status: 400 },
@@ -15,11 +33,14 @@ export async function POST(request: NextRequest) {
   }
 
   const analysis = createReceiptAnalysisFromText(receiptText, sourceName);
+  const hasVisionProvider = Boolean(process.env.OPENAI_API_KEY);
 
   return NextResponse.json({
     analysis,
     pipeline: {
-      ocr: file instanceof File ? "pending-provider" : "manual-text",
+      billingMode: "manual-trigger-only",
+      provider: hasVisionProvider ? "openai-vision-ready" : "mock-no-api-key",
+      ocr: file || contentType.includes("application/json") ? "pending-provider" : "manual-text",
       localeDetection: "enabled",
       globalCurrencies: ["KRW", "HKD", "USD", "JPY", "EUR", "GBP"],
       placeEnrichment: "ready-for-google-places-or-maps-provider",
