@@ -9,6 +9,7 @@ import {
   CircleDollarSign,
   Globe2,
   Home,
+  ImageUp,
   Languages,
   MapPin,
   Plus,
@@ -907,23 +908,41 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
                   국가, 언어, 통화, 세금과 팁까지 구분합니다.
                 </p>
               </div>
-              <label
-                className={`grid size-11 place-items-center rounded-lg bg-[#f3bf4f] text-[#10231f] ${
-                  isUploadingReceipt ? "cursor-wait opacity-70" : "cursor-pointer"
-                }`}
-                aria-label="영수증 첨부"
-                title="영수증 첨부"
-              >
-                <Camera size={21} />
-                <input
-                  className="sr-only"
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  disabled={isUploadingReceipt}
-                  onChange={handleReceipt}
-                />
-              </label>
+              <div className="flex gap-2">
+                <label
+                  className={`grid size-11 place-items-center rounded-lg bg-white text-[#10231f] ring-1 ring-[#d9d0bf] ${
+                    isUploadingReceipt ? "cursor-wait opacity-70" : "cursor-pointer"
+                  }`}
+                  aria-label="사진 선택"
+                  title="사진 선택"
+                >
+                  <ImageUp size={21} />
+                  <input
+                    className="sr-only"
+                    type="file"
+                    accept="image/*"
+                    disabled={isUploadingReceipt}
+                    onChange={handleReceipt}
+                  />
+                </label>
+                <label
+                  className={`grid size-11 place-items-center rounded-lg bg-[#f3bf4f] text-[#10231f] ${
+                    isUploadingReceipt ? "cursor-wait opacity-70" : "cursor-pointer"
+                  }`}
+                  aria-label="카메라 촬영"
+                  title="카메라 촬영"
+                >
+                  <Camera size={21} />
+                  <input
+                    className="sr-only"
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    disabled={isUploadingReceipt}
+                    onChange={handleReceipt}
+                  />
+                </label>
+              </div>
             </div>
 
             <div className="mt-4 rounded-lg border border-[#d8cebb] bg-[#fffaf0] p-4">
