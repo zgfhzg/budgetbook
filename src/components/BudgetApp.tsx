@@ -72,6 +72,12 @@ type TransactionItem = {
   time: string;
 };
 
+type SearchTransactionItem = TransactionItem & {
+  currency: string;
+  localDate: string;
+  memo: string | null;
+};
+
 type UploadedReceipt = {
   id: string;
   storagePath: string;
@@ -91,6 +97,7 @@ type AppTab = "home" | "receipts" | "search";
 
 const manualCategories = ["식비", "카페", "교통", "생활", "의료"] as const;
 const manualCurrencies = ["KRW", "HKD"] as const;
+const filterAllValue = "all";
 
 const money = new Intl.NumberFormat("ko-KR");
 
@@ -156,6 +163,15 @@ function toTransactionItem(row: TransactionRow): TransactionItem {
   };
 }
 
+function toSearchTransactionItem(row: TransactionRow): SearchTransactionItem {
+  return {
+    ...toTransactionItem(row),
+    currency: row.currency,
+    localDate: row.local_date,
+    memo: row.memo,
+  };
+}
+
 function sanitizeStorageFileName(fileName: string) {
   const [name = "receipt", ...extensionParts] = fileName.split(".");
   const extension = extensionParts.pop();
@@ -185,6 +201,7 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
   const [isReviewed, setIsReviewed] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [transactions, setTransactions] = useState<TransactionItem[]>([]);
+  const [searchResults, setSearchResults] = useState<SearchTransactionItem[]>([]);
   const [receipts, setReceipts] = useState<ReceiptRow[]>([]);
   const [isManualFormOpen, setIsManualFormOpen] = useState(false);
   const [manualTitle, setManualTitle] = useState("");
@@ -197,7 +214,14 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
   const [manualPlace, setManualPlace] = useState("");
   const [manualTime, setManualTime] = useState("12:00");
   const [manualMemo, setManualMemo] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchCategory, setSearchCategory] = useState(filterAllValue);
+  const [searchCurrency, setSearchCurrency] = useState(filterAllValue);
+  const [searchDateFrom, setSearchDateFrom] = useState("");
+  const [searchDateTo, setSearchDateTo] = useState("");
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(true);
+  const [isSearchingTransactions, setIsSearchingTransactions] = useState(false);
+  const [hasSearchedTransactions, setHasSearchedTransactions] = useState(false);
   const [isLoadingReceipts, setIsLoadingReceipts] = useState(false);
   const [isLoadingStores, setIsLoadingStores] = useState(false);
   const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
@@ -316,6 +340,68 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
     setIsLoadingStores(false);
   }, [userId]);
 
+  const loadSearchResults = useCallback(async () => {
+    setIsSearchingTransactions(true);
+    setHasSearchedTransactions(true);
+    setDatabaseError("");
+
+    const supabase = getSupabaseBrowserClient();
+    let request = supabase
+      .from("transactions")
+      .select("*, categories(id, name), stores(name)")
+      .eq("user_id", userId)
+      .is("deleted_at", null)
+      .order("occurred_at", { ascending: false })
+      .limit(100);
+
+    if (searchDateFrom) {
+      request = request.gte("local_date", searchDateFrom);
+    }
+
+    if (searchDateTo) {
+      request = request.lte("local_date", searchDateTo);
+    }
+
+    if (searchCurrency !== filterAllValue) {
+      request = request.eq("currency", searchCurrency);
+    }
+
+    const { data, error } = await request;
+
+    if (error) {
+      setSearchResults([]);
+      setDatabaseError(error.message);
+      setIsSearchingTransactions(false);
+      return;
+    }
+
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+    const filteredRows = ((data ?? []) as TransactionRow[]).filter((row) => {
+      const categoryName = row.categories?.name ?? "미분류";
+      const storeName = row.stores?.name ?? "";
+      const matchesCategory =
+        searchCategory === filterAllValue || categoryName === searchCategory;
+      const matchesQuery =
+        !normalizedQuery ||
+        [row.title, row.memo ?? "", categoryName, storeName, row.currency]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedQuery);
+
+      return matchesCategory && matchesQuery;
+    });
+
+    setSearchResults(filteredRows.map(toSearchTransactionItem));
+    setIsSearchingTransactions(false);
+  }, [
+    searchCategory,
+    searchCurrency,
+    searchDateFrom,
+    searchDateTo,
+    searchQuery,
+    userId,
+  ]);
+
   useEffect(() => {
     const task = window.setTimeout(() => {
       void loadTransactions(localDate);
@@ -331,6 +417,10 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
 
     if (nextTab === "receipts") {
       void loadReceipts();
+    }
+
+    if (nextTab === "search" && !hasSearchedTransactions) {
+      void loadSearchResults();
     }
   }
 
@@ -1178,9 +1268,168 @@ export function BudgetApp({ userId, userEmail, onSignOut }: BudgetAppProps) {
 
         <div className={activeTab === "search" ? "" : "hidden"}>
           <section className="px-5 pb-28">
-            <h2 className="text-xl font-bold">검색</h2>
-            <div className="mt-4 rounded-lg border border-[#e6ddcb] bg-white p-4 text-sm leading-6 text-[#63746f]">
-              검색 준비 중
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-bold">검색</h2>
+              <button
+                type="button"
+                onClick={() => void loadSearchResults()}
+                className="grid size-10 place-items-center rounded-lg border border-[#d9d0bf] bg-white"
+                aria-label="새로고침"
+                title="새로고침"
+              >
+                <RefreshCw size={18} />
+              </button>
+            </div>
+
+            <form
+              className="mt-4 space-y-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void loadSearchResults();
+              }}
+            >
+              <div className="flex h-11 items-center gap-2 rounded-lg border border-[#d8cebb] bg-white px-3 focus-within:border-[#2f9f8f]">
+                <Search size={17} className="text-[#257d72]" />
+                <input
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-base outline-none"
+                  placeholder="내역, 장소, 메모"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-[#5e746f]" htmlFor="search-from">
+                    시작일
+                  </label>
+                  <input
+                    id="search-from"
+                    type="date"
+                    value={searchDateFrom}
+                    onChange={(event) => setSearchDateFrom(event.target.value)}
+                    className="mt-1 h-10 w-full rounded-lg border border-[#d8cebb] bg-white px-3 text-sm font-bold outline-none focus:border-[#2f9f8f]"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-[#5e746f]" htmlFor="search-to">
+                    종료일
+                  </label>
+                  <input
+                    id="search-to"
+                    type="date"
+                    value={searchDateTo}
+                    onChange={(event) => setSearchDateTo(event.target.value)}
+                    className="mt-1 h-10 w-full rounded-lg border border-[#d8cebb] bg-white px-3 text-sm font-bold outline-none focus:border-[#2f9f8f]"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <select
+                  value={searchCategory}
+                  onChange={(event) => setSearchCategory(event.target.value)}
+                  className="h-10 rounded-lg border border-[#d8cebb] bg-white px-3 text-sm font-bold outline-none focus:border-[#2f9f8f]"
+                  aria-label="카테고리"
+                >
+                  <option value={filterAllValue}>전체 카테고리</option>
+                  {manualCategories.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={searchCurrency}
+                  onChange={(event) => setSearchCurrency(event.target.value)}
+                  className="h-10 rounded-lg border border-[#d8cebb] bg-white px-3 text-sm font-bold outline-none focus:border-[#2f9f8f]"
+                  aria-label="통화"
+                >
+                  <option value={filterAllValue}>전체 통화</option>
+                  {manualCurrencies.map((currency) => (
+                    <option key={currency} value={currency}>
+                      {currency}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-[1fr_88px] gap-2">
+                <button
+                  type="submit"
+                  className="flex h-11 items-center justify-center gap-2 rounded-lg bg-[#10231f] text-sm font-bold text-white"
+                >
+                  <Search size={17} />
+                  검색
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery("");
+                    setSearchCategory(filterAllValue);
+                    setSearchCurrency(filterAllValue);
+                    setSearchDateFrom("");
+                    setSearchDateTo("");
+                    setSearchResults([]);
+                    setHasSearchedTransactions(false);
+                  }}
+                  className="h-11 rounded-lg border border-[#d8cebb] bg-white text-sm font-bold text-[#5e746f]"
+                >
+                  초기화
+                </button>
+              </div>
+            </form>
+
+            <div className="mt-4 space-y-2">
+              {databaseError ? (
+                <div className="rounded-lg border border-[#e6ddcb] bg-white p-4 text-sm font-semibold text-[#b15e32]">
+                  {databaseError}
+                </div>
+              ) : null}
+
+              {isSearchingTransactions ? (
+                <div className="rounded-lg border border-[#e6ddcb] bg-white p-4 text-sm font-semibold text-[#63746f]">
+                  검색 중
+                </div>
+              ) : null}
+
+              {!isSearchingTransactions &&
+              hasSearchedTransactions &&
+              searchResults.length === 0 ? (
+                <div className="rounded-lg border border-[#e6ddcb] bg-white p-4 text-sm leading-6 text-[#63746f]">
+                  검색 결과가 없습니다.
+                </div>
+              ) : null}
+
+              {searchResults.map((item) => (
+                <article
+                  key={item.id}
+                  className="flex items-center gap-3 rounded-lg border border-[#e6ddcb] bg-white p-3"
+                >
+                  <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-[#e8f3ef] text-[#257d72]">
+                    <WalletCards size={20} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="truncate font-semibold">{item.title}</p>
+                      <p className="shrink-0 font-bold">
+                        -{formatReceiptMoney(item.amount, item.currency)}
+                      </p>
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#6d766f]">
+                      <span>{item.localDate}</span>
+                      <span>{item.place}</span>
+                      <span>{item.category}</span>
+                      <span>{item.time}</span>
+                    </div>
+                    {item.memo ? (
+                      <p className="mt-1 truncate text-xs text-[#8a6f48]">
+                        {item.memo}
+                      </p>
+                    ) : null}
+                  </div>
+                </article>
+              ))}
             </div>
           </section>
         </div>
